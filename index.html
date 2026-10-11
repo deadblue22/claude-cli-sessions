@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CLI Sessions</title>
+<script src="/i18n.js"></script>
 <style>
 :root{--bg:#faf9f7;--panel:#fff;--fg:#1f1e1d;--mute:#77746f;--line:#e7e4df;--acc:#c8643c;--acc2:#fbeee7;--ok:#2f9e5b;--danger:#c0392b}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1a19;--panel:#252321;--fg:#ece9e4;--mute:#9a958d;--line:#38352f;--acc:#e0825a;--acc2:#3a2a22;--ok:#4cc27f;--danger:#ef6c5b}}
@@ -50,33 +51,45 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
 <body>
 <header>
   <h1>CLI Sessions</h1>
-  <input id="q" type="search" placeholder="搜索标题 / 目录 / 首条消息 / id…">
-  <select id="ep"><option value="">全部非 Desktop</option></select>
-  <select id="view"><option value="active">未归档</option><option value="archived">已归档</option><option value="all">全部</option></select>
-  <label><input type="checkbox" id="runOnly"> 仅运行中</label>
-  <select id="term" title="恢复 / 接入时使用的终端"><option value="Terminal">Terminal</option><option value="iTerm">iTerm</option><option value="iTerm-CC">iTerm · tmux -CC</option></select>
-  <button id="refresh">刷新</button>
+  <input id="q" type="search" data-i18n-placeholder="search">
+  <select id="ep"><option value="" data-i18n="allNonDesktop"></option></select>
+  <select id="view"><option value="active" data-i18n="viewActive"></option><option value="archived" data-i18n="viewArchived"></option><option value="all" data-i18n="viewAll"></option></select>
+  <label><input type="checkbox" id="runOnly"> <span data-i18n="runningOnly"></span></label>
+  <select id="term" data-i18n-title="termTitle"><option value="Terminal">Terminal</option><option value="iTerm">iTerm</option><option value="iTerm-CC">iTerm · tmux -CC</option></select>
+  <button id="refresh" data-i18n="refresh"></button>
   <span id="count" style="color:var(--mute)"></span>
+  <select id="lang" data-i18n-title="language"></select>
 </header>
 <main>
   <div id="list"></div>
-  <div id="detail"><div class="empty">选择左侧 session 查看详情</div></div>
+  <div id="detail"><div class="empty" data-i18n="pickSession"></div></div>
 </main>
 <div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);
 let all=[],sel=null,firstLoad=true;
+// 语言：localStorage 里记住的选择 > ?lang=（macOS 壳传入上次的选择或系统语言）> 浏览器语言；默认英文
+const LS='csm.lang',store={get(){try{return localStorage.getItem(LS)}catch{return null}},set(v){try{localStorage.setItem(LS,v)}catch{}}};
+let L=I18N.match(store.get())||I18N.match(new URLSearchParams(location.search).get('lang'))||I18N.pick(navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language]);
+const t=(k,v)=>I18N.t(L,k,v);
+function applyLang(){
+  document.documentElement.lang=L;
+  for(const e of document.querySelectorAll('[data-i18n]'))e.textContent=t(e.dataset.i18n);
+  for(const e of document.querySelectorAll('[data-i18n-placeholder]'))e.placeholder=t(e.dataset.i18nPlaceholder);
+  for(const e of document.querySelectorAll('[data-i18n-title]'))e.title=t(e.dataset.i18nTitle);
+}
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),1800)};
-const ago=ms=>{const s=(Date.now()-ms)/1000;if(s<60)return'刚刚';if(s<3600)return~~(s/60)+' 分钟前';if(s<86400)return~~(s/3600)+' 小时前';if(s<86400*30)return~~(s/86400)+' 天前';return new Date(ms).toLocaleDateString()};
+const toast=m=>{const el=$('#toast');el.textContent=m;el.classList.add('on');setTimeout(()=>el.classList.remove('on'),1800)};
+const ago=ms=>{const s=(Date.now()-ms)/1000;if(s<60)return t('justNow');if(s<3600)return t('minAgo',{n:~~(s/60)});if(s<86400)return t('hrAgo',{n:~~(s/3600)});if(s<86400*30)return t('dayAgo',{n:~~(s/86400)});return new Date(ms).toLocaleDateString(L)};
 const mb=n=>n>1e6?(n/1e6).toFixed(1)+' MB':Math.ceil(n/1e3)+' KB';
 const short=p=>(p||'').replace(/^\/Users\/[^/]+/,'~');
-async function api(a,body){const r=await fetch('/api/'+a,{method:'POST',headers:{'x-csm':'1','content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error);return j}
+const get=u=>fetch(u,{headers:{'x-lang':L}}).then(r=>r.json());
+async function api(a,body){const r=await fetch('/api/'+a,{method:'POST',headers:{'x-csm':'1','x-lang':L,'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error);return j}
 
 async function load(){
-  all=await (await fetch('/api/sessions')).json();
+  all=await get('/api/sessions');
   const eps=[...new Set(all.map(s=>s.entrypoint))],cur=firstLoad?'cli':$('#ep').value;firstLoad=false;
-  $('#ep').innerHTML='<option value="">全部非 Desktop</option>'+eps.map(e=>`<option value="${esc(e)}" ${e==cur?'selected':''}>${e==='cli'?'cli（交互式，默认）':e==='sdk-cli'?'sdk-cli（脚本 / bot）':esc(e)}</option>`).join('');
+  $('#ep').innerHTML=`<option value="">${esc(t('allNonDesktop'))}</option>`+eps.map(e=>`<option value="${esc(e)}" ${e==cur?'selected':''}>${e==='cli'?esc(t('epCli')):e==='sdk-cli'?esc(t('epSdk')):esc(e)}</option>`).join('');
   render();
   if(sel){const s=all.find(x=>x.id===sel);if(s)info(s,false)}
 }
@@ -88,27 +101,27 @@ function filtered(){
 function render(){
   const l=filtered();$('#count').textContent=l.length+' / '+all.length;
   $('#list').innerHTML=l.length?l.map(s=>`<div class="row ${s.id===sel?'sel':''}" data-id="${s.id}">
-    <div class="t">${s.pid?'<span class="dot" title="运行中 pid '+s.pid+'"></span>':''}${esc(s.title)}</div>
-    <div class="m">${s.pending?'<span class="tag" style="color:var(--acc)">尚无对话记录</span>':''}<span>${ago(s.mtime)}</span><span>${esc(short(s.cwd))}</span><span class="tag">${esc(s.entrypoint)}</span>${s.tmux?'<span class="tag">tmux</span>':''}${s.archived?'<span class="tag">已归档</span>':''}${s.note?'<span>📝 '+esc(s.note)+'</span>':''}</div></div>`).join(''):'<div class="empty">没有匹配的 session</div>';
+    <div class="t">${s.pid?'<span class="dot" title="'+esc(t('runningPid',{pid:s.pid}))+'"></span>':''}${esc(s.title)}</div>
+    <div class="m">${s.pending?'<span class="tag" style="color:var(--acc)">'+esc(t('noTranscriptYet'))+'</span>':''}<span>${ago(s.mtime)}</span><span>${esc(short(s.cwd))}</span><span class="tag">${esc(s.entrypoint)}</span>${s.tmux?'<span class="tag">tmux</span>':''}${s.archived?'<span class="tag">'+esc(t('archived'))+'</span>':''}${s.note?'<span>📝 '+esc(s.note)+'</span>':''}</div></div>`).join(''):'<div class="empty">'+esc(t('noMatch'))+'</div>';
 }
-function infoHtml(s){if(s.pending)return `<div id="info"><h2>${esc(s.title)}</h2><div class="kv"><b>目录</b><code>${esc(s.cwd||'?')}</code><b>状态</b><span style="color:var(--ok)">运行中 (pid ${s.pid})</span></div><div class="acts">${s.tmux?`<button class="pri" data-a="tmux">接入 tmux（${esc(s.tmux)}）</button>`:''}</div></div>`;return `<div id="info"><h2>${esc(s.title)}</h2><div class="kv">
-    <b>ID</b><code>${s.id}</code><b>目录</b><code>${esc(s.cwd||'?')}</code>${s.branch?`<b>分支</b><span>${esc(s.branch)}</span>`:''}
-    <b>来源</b><span>${esc(s.entrypoint)}${s.model?' · '+esc(s.model):''}</span><b>最近</b><span>${new Date(s.mtime).toLocaleString()} · ${mb(s.size)}</span>
-    ${s.pid?`<b>状态</b><span style="color:var(--ok)">运行中 (pid ${s.pid})</span>`:''}${s.note?`<b>备注</b><span>${esc(s.note)}</span>`:''}</div>
-    <div class="acts">${s.tmux?`<button class="pri" data-a="tmux">接入 tmux（${esc(s.tmux)}）</button>`:''}<button class="${s.tmux?'':'pri'}" data-a="resume">在 Terminal 中恢复</button><button data-a="desktop">在 Desktop 中恢复</button><button data-a="copy">复制恢复命令</button>
-    <button data-a="gentitle">✨ 生成标题</button><button data-a="rename">重命名</button><button data-a="note">备注</button>
-    <button data-a="archive">${s.archived?'取消归档':'归档'}</button><button class="dng" data-a="delete">移到废纸篓</button></div></div>`}
+function infoHtml(s){if(s.pending)return `<div id="info"><h2>${esc(s.title)}</h2><div class="kv"><b>${t('kDir')}</b><code>${esc(s.cwd||'?')}</code><b>${t('kStatus')}</b><span style="color:var(--ok)">${t('running',{pid:s.pid})}</span></div><div class="acts">${s.tmux?`<button class="pri" data-a="tmux">${esc(t('attachTmux',{target:s.tmux}))}</button>`:''}</div></div>`;return `<div id="info"><h2>${esc(s.title)}</h2><div class="kv">
+    <b>ID</b><code>${s.id}</code><b>${t('kDir')}</b><code>${esc(s.cwd||'?')}</code>${s.branch?`<b>${t('kBranch')}</b><span>${esc(s.branch)}</span>`:''}
+    <b>${t('kSource')}</b><span>${esc(s.entrypoint)}${s.model?' · '+esc(s.model):''}</span><b>${t('kLast')}</b><span>${new Date(s.mtime).toLocaleString(L)} · ${mb(s.size)}</span>
+    ${s.pid?`<b>${t('kStatus')}</b><span style="color:var(--ok)">${t('running',{pid:s.pid})}</span>`:''}${s.note?`<b>${t('kNote')}</b><span>${esc(s.note)}</span>`:''}</div>
+    <div class="acts">${s.tmux?`<button class="pri" data-a="tmux">${esc(t('attachTmux',{target:s.tmux}))}</button>`:''}<button class="${s.tmux?'':'pri'}" data-a="resume">${t('resumeTerminal')}</button><button data-a="desktop">${t('resumeDesktop')}</button><button data-a="copy">${t('copyCmd')}</button>
+    <button data-a="gentitle">${t('genTitle')}</button><button data-a="rename">${t('rename')}</button><button data-a="note">${t('note')}</button>
+    <button data-a="archive">${s.archived?t('unarchive'):t('archive')}</button><button class="dng" data-a="delete">${t('trash')}</button></div></div>`}
 let chatSig=null,chatBusy=false;
 async function renderChat(s){  // 拉取并渲染对话；贴底时跟随新消息，否则保持滚动位置
   if(chatBusy)return;chatBusy=true;
   try{
     const sig=s.mtime+':'+s.size;
-    const t=await (await fetch('/api/transcript?id='+s.id)).json();
+    const tr=await get('/api/transcript?id='+s.id);
     const c=$('#chat');if(!c||sel!==s.id)return;
     const atBottom=chatSig===null||c.scrollHeight-c.scrollTop-c.clientHeight<80,top=c.scrollTop;
-    if(s.pending){c.innerHTML='<div class="empty">这个进程还没有对话记录——可能卡在启动时的确认框（如 “Allow external CLAUDE.md imports?”）。点「接入 tmux」去处理。</div>';chatSig=sig;return}
-    c.innerHTML=(t.total>t.msgs.length?`<div class="empty" style="padding:8px">仅显示最后 ${t.msgs.length} / ${t.total} 条</div>`:'')+
-      t.msgs.map(m=>`<div class="msg ${m.role}"><div class="r">${m.role==='user'?'你':'Claude'} · ${m.ts?new Date(m.ts).toLocaleString():''}</div>${m.t?`<div class="b">${esc(m.t)}</div>`:''}${m.tools.map(tl=>`<details class="tool"><summary>🔧 <b>${esc(tl.name)}</b> ${esc(tl.summary||'')}${tl.error?' <span style="color:var(--danger)">· 出错</span>':''}</summary><pre>${esc(tl.detail)}</pre>${tl.result!=null?`<div class="rl">结果</div><pre>${esc(tl.result)}</pre>`:''}</details>`).join('')}</div>`).join('')||'<div class="empty">无可显示消息</div>';
+    if(s.pending){c.innerHTML='<div class="empty">'+esc(t('pendingChat'))+'</div>';chatSig=sig;return}
+    c.innerHTML=(tr.total>tr.msgs.length?`<div class="empty" style="padding:8px">${t('showingLast',{n:tr.msgs.length,total:tr.total})}</div>`:'')+
+      tr.msgs.map(m=>`<div class="msg ${m.role}"><div class="r">${m.role==='user'?t('you'):'Claude'} · ${m.ts?new Date(m.ts).toLocaleString(L):''}</div>${m.t?`<div class="b">${esc(m.t)}</div>`:''}${m.tools.map(tl=>`<details class="tool"><summary>🔧 <b>${esc(tl.name)}</b> ${esc(tl.summary||'')}${tl.error?' <span style="color:var(--danger)">· '+t('toolError')+'</span>':''}</summary><pre>${esc(tl.detail)}</pre>${tl.result!=null?`<div class="rl">${t('result')}</div><pre>${esc(tl.result)}</pre>`:''}</details>`).join('')}</div>`).join('')||'<div class="empty">'+t('noMessages')+'</div>';
     c.scrollTop=atBottom?c.scrollHeight:top;chatSig=sig;
   }finally{chatBusy=false}
 }
@@ -120,28 +133,34 @@ async function info(s,loadChat=true){
     return;
   }
   chatSig=null;
-  $('#detail').innerHTML=infoHtml(s)+`<div id="chat"><div class="empty">加载中…</div></div>`;
+  $('#detail').innerHTML=infoHtml(s)+`<div id="chat"><div class="empty">${t('loading')}</div></div>`;
   await renderChat(s);
 }
 $('#list').onclick=e=>{const r=e.target.closest('.row');if(r)info(all.find(s=>s.id===r.dataset.id))};
 $('#detail').onclick=async e=>{
   const a=e.target.dataset.a;if(!a)return;const s=all.find(x=>x.id===sel);
   try{
-    if(a==='resume'){if(s.pid&&!confirm('该 session 正在运行，再开一个会产生并发写入。继续？'))return;await api('resume',{id:s.id,cwd:s.cwd});toast('已在 Terminal 打开')}
-    else if(a==='desktop'){if(s.pid&&!confirm('该 session 正在终端运行，导入 Desktop 后两边都能写入。继续？'))return;await api('desktop',{id:s.id});toast('已请求 Desktop 导入')}
-    else if(a==='tmux'){const r=await api('tmux',{id:s.id});toast('已接入 '+r.target)}
-    else if(a==='copy'){await navigator.clipboard.writeText(`cd ${JSON.stringify(s.cwd||'~')} && claude --resume ${s.id}`);toast('已复制')}
-    else if(a==='gentitle'){e.target.disabled=true;e.target.textContent='生成中…';try{const r=await api('gentitle',{id:s.id});toast('标题：'+r.title)}finally{await load()}}
-    else if(a==='rename'){const t=prompt('新标题',s.title);if(!t)return;await api('rename',{id:s.id,title:t});await load()}
-    else if(a==='note'){const n=prompt('备注（留空清除）',s.note||'');if(n===null)return;await api('note',{id:s.id,note:n});await load()}
+    if(a==='resume'){if(s.pid&&!confirm(t('confirmResume')))return;await api('resume',{id:s.id,cwd:s.cwd});toast(t('openedTerminal'))}
+    else if(a==='desktop'){if(s.pid&&!confirm(t('confirmDesktop')))return;await api('desktop',{id:s.id});toast(t('desktopRequested'))}
+    else if(a==='tmux'){const r=await api('tmux',{id:s.id});toast(t('attached',{target:r.target}))}
+    else if(a==='copy'){await navigator.clipboard.writeText(`cd ${JSON.stringify(s.cwd||'~')} && claude --resume ${s.id}`);toast(t('copied'))}
+    else if(a==='gentitle'){e.target.disabled=true;e.target.textContent=t('generating');try{const r=await api('gentitle',{id:s.id});toast(t('titleIs',{title:r.title}))}finally{await load()}}
+    else if(a==='rename'){const nt=prompt(t('newTitle'),s.title);if(!nt)return;await api('rename',{id:s.id,title:nt});await load()}
+    else if(a==='note'){const n=prompt(t('notePrompt'),s.note||'');if(n===null)return;await api('note',{id:s.id,note:n});await load()}
     else if(a==='archive'){await api('archive',{id:s.id,on:!s.archived});await load()}
-    else if(a==='delete'){if(!confirm('将 transcript 文件移到废纸篓？\n'+s.title))return;await api('delete',{id:s.id});sel=null;$('#detail').innerHTML='<div class="empty">已移到废纸篓</div>';await load()}
-  }catch(err){toast('失败：'+err.message)}
+    else if(a==='delete'){if(!confirm(t('confirmTrash',{title:s.title})))return;await api('delete',{id:s.id});sel=null;$('#detail').innerHTML='<div class="empty">'+esc(t('movedToTrash'))+'</div>';await load()}
+  }catch(err){toast(t('failed',{msg:err.message}))}
 };
 for(const id of['q','ep','view','runOnly'])$('#'+id).oninput=render;
 $('#refresh').onclick=load;
 fetch('/api/settings').then(r=>r.json()).then(s=>{$('#term').value=s.term;if(!s.iterm)for(const o of $('#term').options)if(o.value!=='Terminal')o.disabled=true});
-$('#term').onchange=()=>api('settings',{term:$('#term').value}).then(()=>toast('已切换：'+$('#term').selectedOptions[0].text)).catch(e=>toast('失败：'+e.message));
+$('#term').onchange=()=>api('settings',{term:$('#term').value}).then(()=>toast(t('switchedTo',{name:$('#term').selectedOptions[0].text}))).catch(e=>toast(t('failed',{msg:e.message})));
+$('#lang').innerHTML=I18N.langs().map(([k,n])=>`<option value="${esc(k)}">${esc(n)}</option>`).join('');$('#lang').value=L;
+$('#lang').onchange=()=>{L=$('#lang').value;store.set(L);applyLang();
+  try{window.webkit.messageHandlers.lang.postMessage(L)}catch{}  // macOS 壳：跨启动记住
+  const s=all.find(x=>x.id===sel);if(!s)$('#detail').innerHTML=`<div class="empty">${esc(t('pickSession'))}</div>`;
+  load().then(()=>{const s=all.find(x=>x.id===sel);if(s)info(s)})};
+applyLang();
 load();let tick=0;  // 选中的 session 在运行时 4 秒刷新一次，否则 16 秒
 setInterval(()=>{if(document.hidden)return;const s=all.find(x=>x.id===sel);if((s&&s.pid)||++tick%4===0)load()},4000);
 </script>

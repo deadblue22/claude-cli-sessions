@@ -1,7 +1,35 @@
 import Cocoa
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindowDelegate {
+// 界面语言：网页里选过的（存在 UserDefaults）优先，否则用系统首选语言。
+// 端口每次启动随机，网页 localStorage 不跨启动保留，所以由壳记住并通过 ?lang= 传回网页。
+let uiLang = UserDefaults.standard.string(forKey: "lang") ?? Locale.preferredLanguages.first ?? "en"
+// 原生界面字符串：以英文原文为 key 查表（先精确匹配，再按语种）；缺失时回退英文
+let STRINGS: [String: [String: String]] = [
+    "zh": [
+        "Starting…": "启动中…",
+        "Node.js not found. Please install Node.js first.": "找不到 node，请先安装 Node.js",
+        "Failed to start the server: ": "启动服务失败：",
+        "Timed out waiting for the server to start": "服务启动超时",
+        "OK": "确定",
+        "Cancel": "取消",
+        "Quit CLI Sessions": "退出 CLI Sessions",
+        "Edit": "编辑",
+        "Undo": "撤销",
+        "Cut": "剪切",
+        "Copy": "拷贝",
+        "Paste": "粘贴",
+        "Select All": "全选",
+        "View": "显示",
+        "Reload": "刷新",
+    ],
+]
+func tr(_ en: String) -> String {
+    let base = String(uiLang.split(separator: "-").first ?? "en")
+    return STRINGS[uiLang]?[en] ?? STRINGS[base]?[en] ?? en
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindowDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var web: WKWebView!
     var server: Process?
@@ -11,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindow
         NSApp.setActivationPolicy(.regular)
         buildMenu()
         let cfg = WKWebViewConfiguration()
+        cfg.userContentController.add(self, name: "lang")
         web = WKWebView(frame: .zero, configuration: cfg)
         web.uiDelegate = self
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
@@ -23,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindow
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        web.loadHTMLString("<body style='font:14px -apple-system;color:#888;display:grid;place-items:center;height:90vh'>启动中…</body>", baseURL: nil)
+        web.loadHTMLString("<body style='font:14px -apple-system;color:#888;display:grid;place-items:center;height:90vh'>\(tr("Starting…"))</body>", baseURL: nil)
         startServer()
     }
 
@@ -45,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindow
     func startServer() {
         DispatchQueue.global().async {
             guard let node = self.findNode() else {
-                DispatchQueue.main.async { self.fail("找不到 node，请先安装 Node.js") }; return
+                DispatchQueue.main.async { self.fail(tr("Node.js not found. Please install Node.js first.")) }; return
             }
             let sock = socket(AF_INET, SOCK_STREAM, 0)
             var a = sockaddr_in(); a.sin_family = sa_family_t(AF_INET); a.sin_addr.s_addr = inet_addr("127.0.0.1"); a.sin_port = 0
@@ -63,16 +92,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindow
             env["PORT"] = String(self.port); env["STATE_DIR"] = support.path
             p.environment = env
             p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
-            do { try p.run() } catch { DispatchQueue.main.async { self.fail("启动服务失败：\(error)") }; return }
+            do { try p.run() } catch { DispatchQueue.main.async { self.fail(tr("Failed to start the server: ") + "\(error)") }; return }
             self.server = p
             let url = URL(string: "http://127.0.0.1:\(self.port)/api/sessions")!
             for _ in 0..<100 {
                 if (try? Data(contentsOf: url)) != nil {
-                    DispatchQueue.main.async { self.web.load(URLRequest(url: URL(string: "http://127.0.0.1:\(self.port)/")!)) }; return
+                    DispatchQueue.main.async { self.web.load(URLRequest(url: URL(string: "http://127.0.0.1:\(self.port)/?lang=\(uiLang.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "en")")!)) }; return
                 }
                 usleep(100_000)
             }
-            DispatchQueue.main.async { self.fail("服务启动超时") }
+            DispatchQueue.main.async { self.fail(tr("Timed out waiting for the server to start")) }
         }
     }
 
@@ -80,16 +109,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindow
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ n: Notification) { server?.terminate() }
 
+    // 网页切换语言时记下来，下次启动传回
+    func userContentController(_ u: WKUserContentController, didReceive m: WKScriptMessage) {
+        if m.name == "lang", let s = m.body as? String { UserDefaults.standard.set(s, forKey: "lang") }
+    }
+
     // JS 的 confirm / prompt / alert
     func webView(_ w: WKWebView, runJavaScriptAlertPanelWithMessage m: String, initiatedByFrame f: WKFrameInfo, completionHandler c: @escaping () -> Void) {
         let a = NSAlert(); a.messageText = m; a.runModal(); c()
     }
     func webView(_ w: WKWebView, runJavaScriptConfirmPanelWithMessage m: String, initiatedByFrame f: WKFrameInfo, completionHandler c: @escaping (Bool) -> Void) {
-        let a = NSAlert(); a.messageText = m; a.addButton(withTitle: "确定"); a.addButton(withTitle: "取消")
+        let a = NSAlert(); a.messageText = m; a.addButton(withTitle: tr("OK")); a.addButton(withTitle: tr("Cancel"))
         c(a.runModal() == .alertFirstButtonReturn)
     }
     func webView(_ w: WKWebView, runJavaScriptTextInputPanelWithPrompt p: String, defaultText d: String?, initiatedByFrame f: WKFrameInfo, completionHandler c: @escaping (String?) -> Void) {
-        let a = NSAlert(); a.messageText = p; a.addButton(withTitle: "确定"); a.addButton(withTitle: "取消")
+        let a = NSAlert(); a.messageText = p; a.addButton(withTitle: tr("OK")); a.addButton(withTitle: tr("Cancel"))
         let t = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); t.stringValue = d ?? ""
         a.accessoryView = t; a.window.initialFirstResponder = t
         c(a.runModal() == .alertFirstButtonReturn ? t.stringValue : nil)
@@ -99,15 +133,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, NSWindow
         let main = NSMenu(); NSApp.mainMenu = main
         func item(_ title: String, _ menu: NSMenu) -> NSMenu { let i = NSMenuItem(); main.addItem(i); i.submenu = menu; menu.title = title; return menu }
         let app = item("App", NSMenu())
-        app.addItem(withTitle: "退出 CLI Sessions", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        let edit = item("编辑", NSMenu(title: "编辑"))
-        edit.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        let view = item("显示", NSMenu(title: "显示"))
-        view.addItem(withTitle: "刷新", action: #selector(WKWebView.reload(_:)), keyEquivalent: "r")
+        app.addItem(withTitle: tr("Quit CLI Sessions"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let edit = item(tr("Edit"), NSMenu(title: tr("Edit")))
+        edit.addItem(withTitle: tr("Undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: tr("Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: tr("Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: tr("Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: tr("Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let view = item(tr("View"), NSMenu(title: tr("View")))
+        view.addItem(withTitle: tr("Reload"), action: #selector(WKWebView.reload(_:)), keyEquivalent: "r")
     }
 }
 
