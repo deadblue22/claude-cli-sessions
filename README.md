@@ -1,17 +1,19 @@
 # claude-cli-sessions
 
-A small, zero-dependency local web UI (plus an optional macOS app shell) for managing **Claude Code CLI sessions** — the ones that don't show up in Claude Desktop. 零依赖的本地 Web 界面，用来管理不属于 Claude Desktop 的 Claude Code 命令行会话。
+**English** | [简体中文](README.zh-CN.md)
+
+A small, zero-dependency local web UI (plus an optional macOS app shell) for managing **Claude Code CLI sessions** — the ones that don't show up in Claude Desktop.
 
 > Everything runs on your machine. The server listens on `127.0.0.1` only and reads transcripts from `~/.claude/projects`. Nothing is uploaded; no session data is stored in this repository.
-> 全部在本机运行，只监听 127.0.0.1，只读取本机 `~/.claude/projects` 下的记录，不上传任何内容。
 
-## Features 功能
-- List and search CLI sessions, see which ones are running 列表、搜索、运行状态
-- Read a transcript (tool calls collapsed) 查看对话记录
-- Resume in Terminal / iTerm, attach to the tmux pane it runs in, or open in Claude Desktop 恢复、接入 tmux、转 Desktop
-- Rename (same record `/rename` writes), AI-generated title (uses `claude -p --model haiku`), notes, archive, move to Trash 改名、AI 标题、备注、归档、移到废纸篓
+## Features
+- List and search CLI sessions, see which ones are running
+- Read a transcript (tool calls collapsed)
+- Resume in Terminal / iTerm, attach to the tmux pane it runs in, or open in Claude Desktop
+- Rename (same record `/rename` writes), AI-generated title (uses `claude -p --model haiku`), notes, archive, move to Trash
+- UI in English and Simplified Chinese (see [Languages](#languages))
 
-## Run 运行
+## Run
 Requires Node.js and the `claude` CLI on your machine.
 
 ```sh
@@ -28,10 +30,16 @@ Needs Xcode Command Line Tools and Node at runtime.
 ./build-app.sh          # builds "CLI Sessions.app" (ad-hoc signed)
 ```
 
-## Caveats 注意
+## Languages
+The UI defaults to English and switches to Simplified Chinese automatically when your browser (or, in the macOS app, your system) language starts with `zh`. Use the language picker in the top-right corner to change it; the choice is remembered.
+
+AI-generated titles are written in the current UI language. Transcript content is always shown as-is.
+
+To add a language, copy the `en` block in [`i18n.js`](i18n.js), translate the values and set `_name`. Native strings of the macOS shell live in the `STRINGS` table in [`app/main.swift`](app/main.swift), and the permission prompt text in [`build-app.sh`](build-app.sh).
+
+## Caveats
 - macOS-oriented (Terminal/iTerm automation, `open claude://…`); the server itself is plain Node.
 - "Rename" and "AI title" **append a line to the session's `.jsonl` transcript**; "Delete" moves the file to the Trash. Back up anything you care about.
-- The UI is in Chinese. 界面为中文。
 
 ## License
 MIT

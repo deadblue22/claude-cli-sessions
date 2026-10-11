@@ -6,12 +6,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile, spawn } = require('child_process');
+const I18N = require('./i18n.js');
 
 const PORT = +process.env.PORT || 7717;
 const ROOT = path.join(os.homedir(), '.claude', 'projects');
 const SIDECAR = path.join(process.env.STATE_DIR || __dirname, 'state.json'); // { archived: {id: true}, notes: {id: "..."} }
 const DESKTOP = /^claude-desktop/;
 const HEAD = 256 * 1024, TAIL = 512 * 1024;
+// 界面语言：前端发 x-lang，否则看 Accept-Language，默认英文
+const langOf = (req) => I18N.match(req.headers['x-lang']) || I18N.pick((req.headers['accept-language'] || '').split(','));
 
 const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 const loadState = () => { try { return JSON.parse(fs.readFileSync(SIDECAR, 'utf8')); } catch { return { archived: {} }; } };
@@ -145,7 +148,7 @@ function tmuxPanes(cb) { // tty(如 ttys001) → 'session:win.pane'
   });
 }
 
-function listSessions(cb) {
+function listSessions(lang, cb) {
   const state = loadState();
   const out = [];
   let dirs = []; try { dirs = fs.readdirSync(ROOT); } catch {}
@@ -162,11 +165,11 @@ function listSessions(cb) {
   runningIds((run) => tmuxPanes((panes) => {
     // 入口记为 desktop，但当前正由终端里的 claude 进程运行的（如 resume / bot 拉起），也算 CLI
     const pend = (run.pending || []).map(p => ({ id: 'pending-' + p.pid, project: '', cwd: p.cwd, branch: null, entrypoint: 'cli', model: null,
-      title: p.name || '(尚未产生对话)', renamed: false, generated: false, first: null, mtime: p.start, last: null, size: 0, pid: p.pid,
+      title: p.name || I18N.t(lang, 'noConversationYet'), renamed: false, generated: false, first: null, mtime: p.start, last: null, size: 0, pid: p.pid,
       tmux: panes.get(p.tty) || null, archived: false, note: '', pending: true }));
     cb(out.filter(m => !DESKTOP.test(m.entrypoint || '') || (run.get(m.id) || {}).external).map(m => ({
       id: m.id, project: m.project, cwd: m.cwd, branch: m.branch, entrypoint: (run.get(m.id) || {}).external ? 'cli' : (m.entrypoint || 'unknown'), model: m.model,
-      title: m.title || m.aiTitle || cleanTitle(m.first) || '(无标题)', renamed: !!m.title, generated: !!m.aiTitle, first: m.first,
+      title: m.title || m.aiTitle || cleanTitle(m.first) || I18N.t(lang, 'untitled'), renamed: !!m.title, generated: !!m.aiTitle, first: m.first,
       mtime: m.mtime, last: m.last, size: m.size,
       pid: (run.get(m.id) || {}).pid || null, tmux: panes.get((run.get(m.id) || {}).tty) || null, archived: !!state.archived[m.id], note: (state.notes || {})[m.id] || '',
     })).concat(pend).sort((a, b) => b.mtime - a.mtime));
@@ -182,9 +185,10 @@ function findFile(id) {
   return null;
 }
 
-const cut = (x, n) => { x = String(x ?? ''); return x.length > n ? x.slice(0, n) + `\n… (已截断，共 ${x.length} 字符)` : x; };
-function toolInfo(name, i) { // → { summary: 一行摘要, detail: 展开后的主体 }
+const cutL = (x, n, lang) => { x = String(x ?? ''); return x.length > n ? x.slice(0, n) + '\n' + I18N.t(lang, 'truncated', { n: x.length }) : x; };
+function toolInfo(name, i, lang) { // → { summary: 一行摘要, detail: 展开后的主体 }
   i = i || {};
+  const cut = (x, n) => cutL(x, n, lang);
   const one = (x) => String(x || '').split('\n').find(l => l.trim())?.trim().slice(0, 100) || '';
   switch (name) {
     case 'Bash': return { summary: i.description || one(i.command), detail: cut(i.command, 4000) };
@@ -198,18 +202,18 @@ function toolInfo(name, i) { // → { summary: 一行摘要, detail: 展开后�
     default: return { summary: one(i.description || i.command || i.query || i.file_path || i.prompt || ''), detail: cut(JSON.stringify(i, null, 1), 2000) };
   }
 }
-const resultText = (c) => typeof c === 'string' ? c : Array.isArray(c) ? c.map(x => x && x.type === 'text' ? x.text : x && x.type === 'image' ? '[图片]' : '').filter(Boolean).join('\n') : '';
+const resultText = (c, lang) => typeof c === 'string' ? c : Array.isArray(c) ? c.map(x => x && x.type === 'text' ? x.text : x && x.type === 'image' ? I18N.t(lang, 'image') : '').filter(Boolean).join('\n') : '';
 
-function transcript(file, limit = 300) {
+function transcript(file, limit = 300, lang = I18N.DEFAULT) {
   const msgs = [], byId = new Map();
   for (const l of fs.readFileSync(file, 'utf8').split('\n')) {
     if (!l) continue; let o; try { o = JSON.parse(l); } catch { continue; }
     if (o.isSidechain || (o.type !== 'user' && o.type !== 'assistant')) continue;
     const c = o.message && o.message.content;
     if (o.type === 'user' && Array.isArray(c)) // 工具结果回填到对应的调用上
-      for (const r of c) if (r && r.type === 'tool_result' && byId.has(r.tool_use_id)) { const t = byId.get(r.tool_use_id); t.result = cut(resultText(r.content), 2500); t.error = !!r.is_error; }
+      for (const r of c) if (r && r.type === 'tool_result' && byId.has(r.tool_use_id)) { const t = byId.get(r.tool_use_id); t.result = cutL(resultText(r.content, lang), 2500, lang); t.error = !!r.is_error; }
     const t = textOf(c);
-    const tools = Array.isArray(c) ? c.filter(x => x && x.type === 'tool_use').map(x => { const ti = toolInfo(x.name, x.input), tool = { name: x.name, ...ti, result: null }; byId.set(x.id, tool); return tool; }) : [];
+    const tools = Array.isArray(c) ? c.filter(x => x && x.type === 'tool_use').map(x => { const ti = toolInfo(x.name, x.input, lang), tool = { name: x.name, ...ti, result: null }; byId.set(x.id, tool); return tool; }) : [];
     if (o.type === 'user' && isNoise(t)) continue;
     if (!t && !tools.length) continue;
     msgs.push({ role: o.type, t: t.slice(0, 4000), tools, ts: o.timestamp });
@@ -221,15 +225,15 @@ function claudeBin() {
   const c = [process.env.CLAUDE_BIN, path.join(os.homedir(), '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'].filter(Boolean);
   return c.find(p => fs.existsSync(p)) || 'claude';
 }
-function genTitle(file) {
+function genTitle(file, lang) {
   const t = transcript(file, 100000).msgs.filter(m => m.role === 'user');
   const picks = [...t.slice(0, 3), ...t.slice(-1)].map(m => cleanTitle(m.t.replace(/\s+/g, ' ')).slice(0, 300) || m.t.slice(0, 300));
-  const prompt = '下面是一段 Claude Code 会话中用户说过的话（按时间顺序）。请为这个会话起一个简短的中文标题（8~20 个字，概括主题，名词短语，不要标点结尾，不要引号），只输出标题本身。\n\n' + picks.map((x, i) => `${i + 1}. ${x}`).join('\n');
+  const prompt = I18N.t(lang, 'genPrompt') + '\n\n' + picks.map((x, i) => `${i + 1}. ${x}`).join('\n');
   return new Promise((res, rej) => {
     const p = spawn(claudeBin(), ['-p', '--model', 'haiku', '--no-session-persistence'], { cwd: os.tmpdir(), stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, PATH: process.env.PATH + ':' + path.join(os.homedir(), '.local/bin') + ':/opt/homebrew/bin:/usr/local/bin' } });
-    let out = ''; const to = setTimeout(() => { p.kill(); rej(new Error('生成超时')); }, 90000);
+    let out = ''; const to = setTimeout(() => { p.kill(); rej(new Error(I18N.t(lang, 'genTimeout'))); }, 90000);
     p.stdout.on('data', d => out += d); p.on('error', e => { clearTimeout(to); rej(e); });
-    p.on('close', () => { clearTimeout(to); const title = out.trim().split('\n').pop().replace(/^["'“「《#\s]+|["'”」》。\s]+$/g, '').slice(0, 40); title ? res(title) : rej(new Error('模型没有返回标题')); });
+    p.on('close', () => { clearTimeout(to); const title = out.trim().split('\n').pop().replace(/^["'“「《#\s]+|["'”」》。\s]+$/g, '').slice(0, 40); title ? res(title) : rej(new Error(I18N.t(lang, 'genEmpty'))); });
     p.stdin.end(prompt);
   });
 }
@@ -269,57 +273,58 @@ http.createServer(async (req, res) => {
   // 防 DNS rebinding / 跨站：仅接受本机 Host；写操作要求自定义头
   const host = (req.headers.host || '').replace(/:\d+$/, '');
   if (host !== '127.0.0.1' && host !== 'localhost') return send(res, 403, { error: 'bad host' });
-  const url = new URL(req.url, 'http://x');
+  const url = new URL(req.url, 'http://x'), lang = langOf(req), T = (k) => I18N.t(lang, k);
   try {
     if (req.method === 'GET' && url.pathname === '/') return send(res, 200, fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'), 'text/html');
+    if (req.method === 'GET' && url.pathname === '/i18n.js') return send(res, 200, fs.readFileSync(path.join(__dirname, 'i18n.js'), 'utf8'), 'text/javascript');
     if (req.method === 'GET' && url.pathname === '/api/settings') return send(res, 200, { term: termOf(), iterm: fs.existsSync('/Applications/iTerm.app') });
     if (req.method === 'POST' && url.pathname === '/api/settings') {
       if (req.headers['x-csm'] !== '1') return send(res, 403, { error: 'missing header' });
       const b = await readBody(req); if (!['Terminal', 'iTerm', 'iTerm-CC'].includes(b.term)) return send(res, 400, { error: 'bad term' });
       const st = loadState(); st.settings = { ...(st.settings || {}), term: b.term }; saveState(st); return send(res, 200, { ok: true });
     }
-    if (req.method === 'GET' && url.pathname === '/api/sessions') return listSessions((l) => send(res, 200, l));
+    if (req.method === 'GET' && url.pathname === '/api/sessions') return listSessions(lang, (l) => send(res, 200, l));
     if (req.method === 'GET' && url.pathname === '/api/transcript') {
       if (/^pending-/.test(url.searchParams.get('id') || '')) return send(res, 200, { total: 0, msgs: [] });
-      const f = findFile(url.searchParams.get('id') || ''); if (!f) return send(res, 404, { error: 'not found' });
-      return send(res, 200, transcript(f));
+      const f = findFile(url.searchParams.get('id') || ''); if (!f) return send(res, 404, { error: T('notFound') });
+      return send(res, 200, transcript(f, 300, lang));
     }
     if (req.method === 'POST' && url.pathname.startsWith('/api/')) {
       if (req.headers['x-csm'] !== '1') return send(res, 403, { error: 'missing header' });
       const b = await readBody(req);
       const act = url.pathname.slice(5);
       if (/^pending-\d+$/.test(b.id || '')) { // 还没有 transcript 的运行中进程：只支持接入 tmux
-        if (act !== 'tmux') return send(res, 400, { error: '该进程还没有对话记录，仅支持接入 tmux' });
+        if (act !== 'tmux') return send(res, 400, { error: T('pendingOnlyTmux') });
         const run = await new Promise(r => runningIds(r)), t = await new Promise(r => tmuxPanes(r));
         const p = (run.pending || []).find(x => 'pending-' + x.pid === b.id), target = p && t.get(p.tty);
-        if (!target) return send(res, 404, { error: '该进程当前不在 tmux 中运行' });
+        if (!target) return send(res, 404, { error: T('procNotInTmux') });
         await attachTmux(target); return send(res, 200, { ok: true, target });
       }
-      const f = findFile(b.id || ''); if (!f) return send(res, 404, { error: 'not found' });
+      const f = findFile(b.id || ''); if (!f) return send(res, 404, { error: T('notFound') });
       if (act === 'resume') { await openInTerminal(b.cwd, b.id); return send(res, 200, { ok: true }); }
       if (act === 'desktop') { await new Promise((ok, no) => execFile('open', ['claude://resume?session=' + b.id], e => e ? no(e) : ok())); return send(res, 200, { ok: true }); }
       if (act === 'tmux') {
         const run = await new Promise(r => runningIds(r)), t = await new Promise(r => tmuxPanes(r));
         const target = t.get((run.get(b.id) || {}).tty);
-        if (!target) return send(res, 404, { error: '该 session 当前不在 tmux 中运行' });
+        if (!target) return send(res, 404, { error: T('sessNotInTmux') });
         await attachTmux(target); return send(res, 200, { ok: true, target });
       }
       if (act === 'archive') { const s = loadState(); s.archived = s.archived || {}; b.on ? s.archived[b.id] = true : delete s.archived[b.id]; saveState(s); return send(res, 200, { ok: true }); }
       if (act === 'note') { const s = loadState(); s.notes = s.notes || {}; if (b.note) s.notes[b.id] = String(b.note).slice(0, 500); else delete s.notes[b.id]; saveState(s); return send(res, 200, { ok: true }); }
       if (act === 'rename') {
-        const title = String(b.title || '').trim().slice(0, 200); if (!title) return send(res, 400, { error: 'empty' });
+        const title = String(b.title || '').trim().slice(0, 200); if (!title) return send(res, 400, { error: T('emptyTitle') });
         // 与 claude 自身一致：追加 custom-title 记录（/resume 会读取）
         fs.appendFileSync(f, JSON.stringify({ type: 'custom-title', customTitle: title, sessionId: b.id }) + '\n');
         return send(res, 200, { ok: true });
       }
       if (act === 'gentitle') {
-        const title = await genTitle(f);
+        const title = await genTitle(f, lang);
         fs.appendFileSync(f, JSON.stringify({ type: 'ai-title', aiTitle: title, sessionId: b.id }) + '\n'); // 与 claude 自身一致；自定义标题优先级更高
         return send(res, 200, { ok: true, title });
       }
       if (act === 'delete') { await trash(f); return send(res, 200, { ok: true }); }
       return send(res, 404, { error: 'unknown action' });
     }
-    send(res, 404, { error: 'not found' });
+    send(res, 404, { error: T('notFound') });
   } catch (e) { send(res, 500, { error: String(e.message || e) }); }
 }).listen(PORT, '127.0.0.1', () => console.log(`Claude CLI Session Manager → http://127.0.0.1:${PORT}`));
