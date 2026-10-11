@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CLI Sessions</title>
+<style>
+:root{--bg:#faf9f7;--panel:#fff;--fg:#1f1e1d;--mute:#77746f;--line:#e7e4df;--acc:#c8643c;--acc2:#fbeee7;--ok:#2f9e5b;--danger:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1a19;--panel:#252321;--fg:#ece9e4;--mute:#9a958d;--line:#38352f;--acc:#e0825a;--acc2:#3a2a22;--ok:#4cc27f;--danger:#ef6c5b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;height:100vh;display:flex;flex-direction:column}
+header{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+h1{font-size:15px;margin:0 8px 0 0}
+input,select,button{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 10px}
+input[type=search]{flex:1;min-width:180px}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
+button.dng:hover{border-color:var(--danger);color:var(--danger)}
+main{flex:1;display:flex;min-height:0}
+#list{width:46%;max-width:620px;min-width:320px;overflow:auto;border-right:1px solid var(--line)}
+.row{padding:10px 16px;border-bottom:1px solid var(--line);cursor:pointer}
+.row:hover{background:var(--acc2)}.row.sel{background:var(--acc2);box-shadow:inset 3px 0 var(--acc)}
+.row .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .m{color:var(--mute);font-size:12px;display:flex;gap:10px;flex-wrap:wrap;margin-top:2px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px}
+.tag{font-size:11px;padding:0 6px;border:1px solid var(--line);border-radius:10px;color:var(--mute)}
+#detail{flex:1;display:flex;flex-direction:column;min-width:0}
+#info{padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+#info h2{margin:0 0 6px;font-size:16px;word-break:break-all}
+#info .kv{color:var(--mute);font-size:12px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}
+#info .kv b{font-weight:500}
+.acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+#chat{flex:1;overflow:auto;padding:16px 20px}
+.msg{margin:0 0 12px;max-width:820px}
+.msg .r{font-size:11px;color:var(--mute);margin-bottom:2px}
+.msg .b{white-space:pre-wrap;word-break:break-word;padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
+.msg.user .b{background:var(--acc2);border-color:transparent}
+.tool{margin:3px 0;font-size:12px;color:var(--mute);max-width:820px}
+.tool summary{cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tool summary b{color:var(--fg);font-weight:600}
+.tool pre{margin:4px 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;white-space:pre-wrap;word-break:break-all;max-height:320px;overflow:auto;color:var(--fg);font:12px/1.45 ui-monospace,Menlo,monospace}
+.tool .rl{font-size:11px;margin-top:6px}
+.msg .tools{font-size:11px;color:var(--mute);margin-top:3px}
+.empty{color:var(--mute);padding:40px;text-align:center}
+code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 16px;border-radius:8px;opacity:0;transition:.2s;pointer-events:none}
+#toast.on{opacity:1}
+@media (max-width:760px){main{flex-direction:column}#list{width:100%;max-width:none;height:40%;border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>CLI Sessions</h1>
+  <input id="q" type="search" placeholder="搜索标题 / 目录 / 首条消息 / id…">
+  <select id="ep"><option value="">全部非 Desktop</option></select>
+  <select id="view"><option value="active">未归档</option><option value="archived">已归档</option><option value="all">全部</option></select>
+  <label><input type="checkbox" id="runOnly"> 仅运行中</label>
+  <select id="term" title="恢复 / 接入时使用的终端"><option value="Terminal">Terminal</option><option value="iTerm">iTerm</option><option value="iTerm-CC">iTerm · tmux -CC</option></select>
+  <button id="refresh">刷新</button>
+  <span id="count" style="color:var(--mute)"></span>
+</header>
+<main>
+  <div id="list"></div>
+  <div id="detail"><div class="empty">选择左侧 session 查看详情</div></div>
+</main>
+<div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+let all=[],sel=null,firstLoad=true;
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),1800)};
+const ago=ms=>{const s=(Date.now()-ms)/1000;if(s<60)return'刚刚';if(s<3600)return~~(s/60)+' 分钟前';if(s<86400)return~~(s/3600)+' 小时前';if(s<86400*30)return~~(s/86400)+' 天前';return new Date(ms).toLocaleDateString()};
+const mb=n=>n>1e6?(n/1e6).toFixed(1)+' MB':Math.ceil(n/1e3)+' KB';
+const short=p=>(p||'').replace(/^\/Users\/[^/]+/,'~');
+async function api(a,body){const r=await fetch('/api/'+a,{method:'POST',headers:{'x-csm':'1','content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error);return j}
+
+async function load(){
+  all=await (await fetch('/api/sessions')).json();
+  const eps=[...new Set(all.map(s=>s.entrypoint))],cur=firstLoad?'cli':$('#ep').value;firstLoad=false;
+  $('#ep').innerHTML='<option value="">全部非 Desktop</option>'+eps.map(e=>`<option value="${esc(e)}" ${e==cur?'selected':''}>${e==='cli'?'cli（交互式，默认）':e==='sdk-cli'?'sdk-cli（脚本 / bot）':esc(e)}</option>`).join('');
+  render();
+  if(sel){const s=all.find(x=>x.id===sel);if(s)info(s,false)}
+}
+function filtered(){
+  const q=$('#q').value.toLowerCase(),ep=$('#ep').value,v=$('#view').value,ro=$('#runOnly').checked;
+  return all.filter(s=>(!ep||s.entrypoint===ep)&&(v==='all'||(v==='archived')===s.archived)&&(!ro||s.pid)&&
+    (!q||[s.title,s.cwd,s.first,s.id,s.note,s.branch].some(x=>(x||'').toLowerCase().includes(q))));
+}
+function render(){
+  const l=filtered();$('#count').textContent=l.length+' / '+all.length;
+  $('#list').innerHTML=l.length?l.map(s=>`<div class="row ${s.id===sel?'sel':''}" data-id="${s.id}">
+    <div class="t">${s.pid?'<span class="dot" title="运行中 pid '+s.pid+'"></span>':''}${esc(s.title)}</div>
+    <div class="m">${s.pending?'<span class="tag" style="color:var(--acc)">尚无对话记录</span>':''}<span>${ago(s.mtime)}</span><span>${esc(short(s.cwd))}</span><span class="tag">${esc(s.entrypoint)}</span>${s.tmux?'<span class="tag">tmux</span>':''}${s.archived?'<span class="tag">已归档</span>':''}${s.note?'<span>📝 '+esc(s.note)+'</span>':''}</div></div>`).join(''):'<div class="empty">没有匹配的 session</div>';
+}
+function infoHtml(s){if(s.pending)return `<div id="info"><h2>${esc(s.title)}</h2><div class="kv"><b>目录</b><code>${esc(s.cwd||'?')}</code><b>状态</b><span style="color:var(--ok)">运行中 (pid ${s.pid})</span></div><div class="acts">${s.tmux?`<button class="pri" data-a="tmux">接入 tmux（${esc(s.tmux)}）</button>`:''}</div></div>`;return `<div id="info"><h2>${esc(s.title)}</h2><div class="kv">
+    <b>ID</b><code>${s.id}</code><b>目录</b><code>${esc(s.cwd||'?')}</code>${s.branch?`<b>分支</b><span>${esc(s.branch)}</span>`:''}
+    <b>来源</b><span>${esc(s.entrypoint)}${s.model?' · '+esc(s.model):''}</span><b>最近</b><span>${new Date(s.mtime).toLocaleString()} · ${mb(s.size)}</span>
+    ${s.pid?`<b>状态</b><span style="color:var(--ok)">运行中 (pid ${s.pid})</span>`:''}${s.note?`<b>备注</b><span>${esc(s.note)}</span>`:''}</div>
+    <div class="acts">${s.tmux?`<button class="pri" data-a="tmux">接入 tmux（${esc(s.tmux)}）</button>`:''}<button class="${s.tmux?'':'pri'}" data-a="resume">在 Terminal 中恢复</button><button data-a="desktop">在 Desktop 中恢复</button><button data-a="copy">复制恢复命令</button>
+    <button data-a="gentitle">✨ 生成标题</button><button data-a="rename">重命名</button><button data-a="note">备注</button>
+    <button data-a="archive">${s.archived?'取消归档':'归档'}</button><button class="dng" data-a="delete">移到废纸篓</button></div></div>`}
+let chatSig=null,chatBusy=false;
+async function renderChat(s){  // 拉取并渲染对话；贴底时跟随新消息，否则保持滚动位置
+  if(chatBusy)return;chatBusy=true;
+  try{
+    const sig=s.mtime+':'+s.size;
+    const t=await (await fetch('/api/transcript?id='+s.id)).json();
+    const c=$('#chat');if(!c||sel!==s.id)return;
+    const atBottom=chatSig===null||c.scrollHeight-c.scrollTop-c.clientHeight<80,top=c.scrollTop;
+    if(s.pending){c.innerHTML='<div class="empty">这个进程还没有对话记录——可能卡在启动时的确认框（如 “Allow external CLAUDE.md imports?”）。点「接入 tmux」去处理。</div>';chatSig=sig;return}
+    c.innerHTML=(t.total>t.msgs.length?`<div class="empty" style="padding:8px">仅显示最后 ${t.msgs.length} / ${t.total} 条</div>`:'')+
+      t.msgs.map(m=>`<div class="msg ${m.role}"><div class="r">${m.role==='user'?'你':'Claude'} · ${m.ts?new Date(m.ts).toLocaleString():''}</div>${m.t?`<div class="b">${esc(m.t)}</div>`:''}${m.tools.map(tl=>`<details class="tool"><summary>🔧 <b>${esc(tl.name)}</b> ${esc(tl.summary||'')}${tl.error?' <span style="color:var(--danger)">· 出错</span>':''}</summary><pre>${esc(tl.detail)}</pre>${tl.result!=null?`<div class="rl">结果</div><pre>${esc(tl.result)}</pre>`:''}</details>`).join('')}</div>`).join('')||'<div class="empty">无可显示消息</div>';
+    c.scrollTop=atBottom?c.scrollHeight:top;chatSig=sig;
+  }finally{chatBusy=false}
+}
+async function info(s,loadChat=true){
+  sel=s.id;render();
+  if(!loadChat&&$('#info')){
+    $('#info').outerHTML=infoHtml(s);
+    if(!s.pending&&chatSig!==s.mtime+':'+s.size)renderChat(s);  // 文件有新内容才重拉对话
+    return;
+  }
+  chatSig=null;
+  $('#detail').innerHTML=infoHtml(s)+`<div id="chat"><div class="empty">加载中…</div></div>`;
+  await renderChat(s);
+}
+$('#list').onclick=e=>{const r=e.target.closest('.row');if(r)info(all.find(s=>s.id===r.dataset.id))};
+$('#detail').onclick=async e=>{
+  const a=e.target.dataset.a;if(!a)return;const s=all.find(x=>x.id===sel);
+  try{
+    if(a==='resume'){if(s.pid&&!confirm('该 session 正在运行，再开一个会产生并发写入。继续？'))return;await api('resume',{id:s.id,cwd:s.cwd});toast('已在 Terminal 打开')}
+    else if(a==='desktop'){if(s.pid&&!confirm('该 session 正在终端运行，导入 Desktop 后两边都能写入。继续？'))return;await api('desktop',{id:s.id});toast('已请求 Desktop 导入')}
+    else if(a==='tmux'){const r=await api('tmux',{id:s.id});toast('已接入 '+r.target)}
+    else if(a==='copy'){await navigator.clipboard.writeText(`cd ${JSON.stringify(s.cwd||'~')} && claude --resume ${s.id}`);toast('已复制')}
+    else if(a==='gentitle'){e.target.disabled=true;e.target.textContent='生成中…';try{const r=await api('gentitle',{id:s.id});toast('标题：'+r.title)}finally{await load()}}
+    else if(a==='rename'){const t=prompt('新标题',s.title);if(!t)return;await api('rename',{id:s.id,title:t});await load()}
+    else if(a==='note'){const n=prompt('备注（留空清除）',s.note||'');if(n===null)return;await api('note',{id:s.id,note:n});await load()}
+    else if(a==='archive'){await api('archive',{id:s.id,on:!s.archived});await load()}
+    else if(a==='delete'){if(!confirm('将 transcript 文件移到废纸篓？\n'+s.title))return;await api('delete',{id:s.id});sel=null;$('#detail').innerHTML='<div class="empty">已移到废纸篓</div>';await load()}
+  }catch(err){toast('失败：'+err.message)}
+};
+for(const id of['q','ep','view','runOnly'])$('#'+id).oninput=render;
+$('#refresh').onclick=load;
+fetch('/api/settings').then(r=>r.json()).then(s=>{$('#term').value=s.term;if(!s.iterm)for(const o of $('#term').options)if(o.value!=='Terminal')o.disabled=true});
+$('#term').onchange=()=>api('settings',{term:$('#term').value}).then(()=>toast('已切换：'+$('#term').selectedOptions[0].text)).catch(e=>toast('失败：'+e.message));
+load();let tick=0;  // 选中的 session 在运行时 4 秒刷新一次，否则 16 秒
+setInterval(()=>{if(document.hidden)return;const s=all.find(x=>x.id===sel);if((s&&s.pid)||++tick%4===0)load()},4000);
+</script>
+</body>
+</html>
